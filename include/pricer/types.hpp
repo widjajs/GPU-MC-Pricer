@@ -67,6 +67,7 @@ struct SimConfig {
     bool control_variate = false;  // arithmetic Asian/basket: geometric version as control
     Precision precision = Precision::Double;     // GPU only; CPU always uses double
     GpuKernel kernel = GpuKernel::GridStride;    // GPU only; basket always uses GridStride
+    int grid_waves = 1;  // GridStride/basket: launch this many times the resident block count
 };
 
 struct PriceResult {

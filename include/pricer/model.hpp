@@ -75,6 +75,7 @@ template <class Real>
 PRICER_HD inline void path_payoffs(const PathParams<Real>& p, Real log_s_end, Real arith_sum,
                                    Real log_sum, Real& y, Real& x) {
     x = Real(0);
+    y = Real(0);
     switch (p.kind) {
         case OptionKind::European:
             y = payoff(p.cp, m_exp(log_s_end), p.strike);

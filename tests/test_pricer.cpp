@@ -265,6 +265,25 @@ int main() {
                              ": basket suite",
                          [p] { basket_suite(gpu_basket_pricer(p)); }, true});
     }
+    tests.push_back({"gpu: multi-wave grid-stride and basket launches stay correct",
+                     [] {
+                         for (int waves : {2, 8, 32}) {
+                             SimConfig c = config(1000003);
+                             c.grid_waves = waves;
+                             c.precision = Precision::Single;
+                             const Option eu = make(OptionKind::European, CallPut::Call, 1);
+                             const PriceResult r = price_gpu(market(), eu, c);
+                             CHECK(r.n_paths == 1000003, "waves=%d n_paths=%llu", waves,
+                                   static_cast<unsigned long long>(r.n_paths));
+                             check_within_se(r, black_scholes(market(), eu),
+                                             "european waves=" + std::to_string(waves));
+                             BasketOption g = BasketOption::equicorrelated(
+                                 4, 0.5, market(), 100.0, 1.0, CallPut::Call, BasketKind::Geometric);
+                             check_within_se(price_basket_gpu(g, c), geometric_basket(g),
+                                             "geo basket waves=" + std::to_string(waves));
+                         }
+                     },
+                     true});
     tests.push_back({"gpu: agrees with cpu on arithmetic asian (64 steps)",
                      [] {
                          const Option o = make(OptionKind::ArithmeticAsian, CallPut::Call, 64);

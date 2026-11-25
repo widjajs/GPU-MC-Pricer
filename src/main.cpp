@@ -43,6 +43,7 @@ void usage() {
         "  --threads T      CPU threads for 'cpu' (default: all)\n"
         "  --kernel naive|reduce|grid   GPU kernel for --backend gpu (default grid)\n"
         "  --float          FP32 path arithmetic for --backend gpu\n"
+        "  --waves W        grid-stride/basket grid = W x resident blocks (default 1)\n"
         "  --repeat R       run each backend R times, report the fastest (default 3)\n"
         "  --csv            machine-readable output, one line per backend");
 }
@@ -114,6 +115,7 @@ int main(int argc, char** argv) {
         else if (arg("--antithetic")) cfg.antithetic = true;
         else if (arg("--cv")) cfg.control_variate = true;
         else if (arg("--float")) cfg.precision = Precision::Single;
+        else if (arg("--waves")) cfg.grid_waves = std::atoi(next());
         else if (arg("--csv")) csv = true;
         else if (arg("--help") || arg("-h")) { usage(); return 0; }
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); usage(); return 2; }
@@ -142,7 +144,10 @@ int main(int argc, char** argv) {
     };
     auto gpu_label = [&](const SimConfig& c) {
         std::string l = is_basket ? "gpu" : "gpu-" + to_string(c.kernel);
-        return c.precision == Precision::Single ? l + "-f32" : l;
+        if (c.precision == Precision::Single) l += "-f32";
+        if (c.grid_waves != 1 && (is_basket || c.kernel == GpuKernel::GridStride))
+            l += "-w" + std::to_string(c.grid_waves);
+        return l;
     };
 
     if (backend == "cpu1" || backend == "all") runs.push_back({"cpu1", cpu(1)});
@@ -158,16 +163,14 @@ int main(int argc, char** argv) {
                 variants.push_back(c);
             }
         } else {
-            for (GpuKernel k : {GpuKernel::Naive, GpuKernel::BlockReduce, GpuKernel::GridStride}) {
-                SimConfig c = cfg;
-                c.kernel = k;
-                c.precision = Precision::Double;
-                variants.push_back(c);
+            for (Precision p : {Precision::Double, Precision::Single}) {
+                for (GpuKernel k : {GpuKernel::Naive, GpuKernel::BlockReduce, GpuKernel::GridStride}) {
+                    SimConfig c = cfg;
+                    c.kernel = k;
+                    c.precision = p;
+                    variants.push_back(c);
+                }
             }
-            SimConfig c = cfg;
-            c.kernel = GpuKernel::GridStride;
-            c.precision = Precision::Single;
-            variants.push_back(c);
         }
         for (const SimConfig& c : variants) runs.push_back({gpu_label(c), gpu(c)});
     }

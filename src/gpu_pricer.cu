@@ -213,14 +213,17 @@ unsigned one_per_sample_blocks(std::uint64_t n) {
     return static_cast<unsigned>(blocks);
 }
 
-// Grid for grid-stride kernels: as many blocks as can be resident at once.
+// Grid for grid-stride kernels: `waves` times as many blocks as can be resident at
+// once. One wave minimizes per-thread overhead; more waves let the scheduler backfill
+// SMs whose warps finish early (profiling showed ~75% achieved occupancy at 1 wave).
 template <class Kernel>
-unsigned resident_blocks(Kernel kernel, std::uint64_t n) {
+unsigned resident_blocks(Kernel kernel, std::uint64_t n, int waves) {
     int device = 0, sms = 0, per_sm = 0;
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device));
     CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel, kThreads, 0));
-    const std::uint64_t resident = static_cast<std::uint64_t>(std::max(per_sm, 1)) * sms;
+    const std::uint64_t resident =
+        static_cast<std::uint64_t>(std::max(per_sm, 1)) * sms * static_cast<std::uint64_t>(std::max(waves, 1));
     const std::uint64_t needed = (n + kThreads - 1) / kThreads;
     return static_cast<unsigned>(std::max<std::uint64_t>(1, std::min(resident, needed)));
 }
@@ -273,7 +276,7 @@ Moments run_single_asset(const PathParams<Real>& p, const SimConfig& cfg, float&
             return collect_partials(partials, blocks, n);
         }
         case GpuKernel::GridStride: {
-            const unsigned blocks = resident_blocks(mc_grid_stride<Real>, n);
+            const unsigned blocks = resident_blocks(mc_grid_stride<Real>, n, cfg.grid_waves);
             DeviceBuffer partials(blocks * sizeof(DevMoments));
             timer.start();
             mc_grid_stride<Real><<<blocks, kThreads>>>(p, cfg.antithetic, n, cfg.seed,
@@ -289,7 +292,7 @@ Moments run_single_asset(const PathParams<Real>& p, const SimConfig& cfg, float&
 template <class Real>
 Moments run_basket(const SimConfig& cfg, float& kernel_ms) {
     const std::uint64_t n = sample_count(cfg);
-    const unsigned blocks = resident_blocks(mc_basket<Real>, n);
+    const unsigned blocks = resident_blocks(mc_basket<Real>, n, cfg.grid_waves);
     DeviceBuffer partials(blocks * sizeof(DevMoments));
     GpuTimer timer;
     timer.start();
