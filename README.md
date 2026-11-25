@@ -59,14 +59,14 @@ prints per-kernel register/stack usage (`ARCH=80 scripts/check_cuda_compile.sh` 
 | Lambda / GCP GPU VM | ~$0.35–1.00/h | yes | profiling |
 
 ```bash
-git clone <this repo> && cd gpu-mc-pricer
+git clone https://github.com/widjajs/GPU-MC-Pricer.git && cd GPU-MC-Pricer
 bash scripts/gpu_setup.sh        # toolchain check, build, tests, ncu permission check
 bash scripts/bench.sh t4         # results/t4.csv + markdown tables
 NCU="sudo $(which ncu)" bash scripts/profile.sh   # Nsight reports in results/profiles/
 ```
 
 Colab: Runtime → Change runtime type → T4 GPU, then in a cell:
-`!git clone <repo> && cd gpu-mc-pricer && bash scripts/gpu_setup.sh && bash scripts/bench.sh colab-t4`
+`!git clone https://github.com/widjajs/GPU-MC-Pricer.git && cd GPU-MC-Pricer && bash scripts/gpu_setup.sh && bash scripts/bench.sh colab-t4`
 
 ## Design notes
 
