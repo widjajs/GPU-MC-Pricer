@@ -81,7 +81,8 @@ side by side isolates its cost:
 - **v1 → v2: per-thread overhead.** v1 launches one thread per path, so every path pays for
   `curand_init` and a block reduction. v2 launches only as many blocks as can be resident
   (`cudaOccupancyMaxActiveBlocksPerMultiprocessor` × SMs) and loops, so those costs are paid
-  once per thread and partial sums stay in registers.
+  once per thread and partial sums stay in registers. (Measured: this wins for short paths
+  but loses to v1 on 252-step paths; see Results.)
 - **FP32 vs FP64.** Consumer and inference GPUs (T4, A10G, L4) run FP64 at 1/32–1/64 of FP32
   rate, so path-heavy products (252-step Asians) should be dramatically faster in FP32. Payoff
   sums stay in FP64 so precision loss is limited to the path itself; the tests check that FP32
@@ -90,6 +91,9 @@ side by side isolates its cost:
   same `L[i][j]` at the same time, which the constant cache serves as a single broadcast.
   `ptxas` reports a small stack frame for the per-thread `z[16]` array (dynamic indexing);
   templating on the dimension would move it to registers.
+- **Grid size (`--waves`).** v2 and basket grids default to one wave of resident blocks; `--waves W`
+  launches W waves. Measured on the T4: 1 wave is best for short paths, and extra waves give
+  ~10% on 252-step paths (see Results).
 
 **Shared model code.** `model.hpp` is compiled for both host and device, so the CPU and GPU
 backends simulate exactly the same model and differ only in RNG and parallelization. A
@@ -107,57 +111,80 @@ standard error from the residual variance.
 
 ## Results
 
-Measured with `scripts/bench.sh`. Prices are within statistical error of the closed forms.
+All prices are within statistical error of the closed forms, and every backend, kernel and
+precision passes the test suite on the T4 (18/18 test groups).
 
-**CPU baseline (Apple M5 Pro, 18 threads, double precision)**
+**Setup.** GPU: NVIDIA Tesla T4 (Google Colab, CUDA 13.0), measured with
+`scripts/bench.sh t4 gpu-all`: one untimed warm-up, then best of 5. *Total* is the wall time of
+the whole call, including allocation and transfers; *kernel* is CUDA-event time. CPU: Apple M5 Pro,
+18 threads, FP64, same harness. (Colab's own CPU is a 2-vCPU VM, so it is not used as a
+baseline.)
+
+### T4 vs 18-thread CPU
+
+| Workload | M5 Pro, 18 threads | T4 best FP64 | T4 best FP32 | FP32 vs CPU |
+|---|---|---|---|---|
+| European, 16M paths | 12.4 ms | 9.6 ms (v2) | **1.22 ms** (v2) | **10×** |
+| Arithmetic Asian, 252 steps, 4M paths | 603 ms | 549 ms (v1) | **13.7 ms** (v1) | **44×** |
+| Same + antithetic + control variate | 388 ms | 359 ms (v1) | **7.9 ms** (v1) | **49×** |
+| Arithmetic basket, d=8, ρ=0.5, 16M paths | 82.3 ms | 74.4 ms | **10.6 ms** | **7.7×** |
+
+### Kernel progression (European call, 16M paths)
+
+| Kernel | FP64 total / kernel ms | FP32 total / kernel ms |
+|---|---|---|
+| v0 naive | 247.8 / 17.5 | 227.3 / 1.35 |
+| v1 block reduce | 25.3 / 24.2 | 6.57 / 5.46 |
+| v2 grid stride | **9.63** / 9.46 | **1.22** / 1.08 |
+
+### Findings
+
+- **v0 → v2 is 26× end to end in FP64 and 186× in FP32.** v0's kernel is fast, but 93–99% of its
+  time is copying 256 MB of payoffs to the host and reducing there.
+- **v1's kernel is slower than v0's** (FP32: 5.46 vs 1.35 ms). With one path per thread, every
+  path pays for a 5-value FP64 block reduction, which costs more than a 1-step path. v2 pays it
+  once per thread instead of once per path.
+- **FP64 throughput is the hard limit.** Nsight Compute shows every FP64 kernel at ~85% SM
+  throughput and ~0% memory throughput, and all three FP64 Asian kernels take the same ~548 ms
+  regardless of structure. FP32 path arithmetic is 7–41× faster depending on the product,
+  consistent with the T4's 1:32 FP64:FP32 ratio, and FP32 prices stay within one standard error
+  of FP64.
+- **The best kernel depends on path length.** For 1-step paths, v2 wins by 5× (per-thread
+  overhead dominates). For 252-step paths, v1 wins: v2 takes 16–20 ms across runs vs a steady
+  13.2 ms for v1.
+- **Investigating v2 on long paths.** Nsight Compute shows v2-FP32 at 75% achieved occupancy
+  vs 99% for v0/v1, with 59 vs 27–46 registers per thread. Hypothesis: a one-wave grid leaves SMs
+  idle when warps finish early. Sweeping the grid from 1 to 32 waves of resident blocks
+  (`scripts/waves_sweep.sh`) recovered only ~10% (16.1 → 14.4 ms) and slowed the European option,
+  so backfill explains only part of the gap. The next step is to compare warp-stall reasons and
+  instruction mix between v1 and v2 in Nsight Compute.
+- **Variance reduction compounds with GPU speed.** Antithetic + control variate reaches
+  SE 0.00011 in 7.9 ms; plain FP32 reaches SE 0.0039 in 13.7 ms and would need ~1200× more paths
+  to match.
+
+### Nsight Compute summary (Asian, 252 steps, 4M paths)
+
+Collected with `scripts/profile.sh`. Nsight locks clocks to base frequency, so durations are
+longer than in the benchmark: compare them with each other, not with the tables above.
+
+| Kernel | Duration | SM throughput | Memory throughput | Registers | Theoretical / achieved occupancy |
+|---|---|---|---|---|---|
+| v0 FP64 | 1.49 s | 85.2% | 0.02% | 46 | 100% / 99.4% |
+| v1 FP64 | 1.49 s | 85.2% | 0.05% | 62 | 100% / 99.6% |
+| v2 FP64 | 1.49 s | 85.1% | 0.00% | 78 | 75% / 60.3% |
+| v0 FP32 | 32.7 ms | 80.8% | 0.74% | 27 | 100% / 98.7% |
+| v1 FP32 | 34.3 ms | 77.5% | 2.14% | 46 | 100% / 98.7% |
+| v2 FP32 | 42.5 ms | 70.1% | 0.02% | 59 | 100% / 74.9% |
+| basket d=8 FP64 | 201 ms | 86.2% | 1.05% | 64 | 100% / 75.6% |
+
+### CPU baseline (Apple M5 Pro, FP64)
 
 | Workload | 1 thread | 18 threads |
 |---|---|---|
-| European, 16M paths | 159 ms | 12 ms |
+| European, 16M paths | 159 ms | 12.4 ms |
 | Arithmetic Asian, 252 steps, 4M paths | 8.0 s | 603 ms |
-| Arithmetic basket, d=8, ρ=0.5, 16M paths | 1.15 s | 82 ms |
-
-**GPU (NVIDIA Tesla T4 on Google Colab, CUDA 13.0)** — best of 3; *total* is the wall time
-of the whole call including allocation and transfers.
-
-T4 vs the 18-thread CPU baseline:
-
-| Workload | M5 Pro, 18 threads (FP64) | T4 v2 FP64 | T4 v2 FP32 | T4 FP32 vs CPU |
-|---|---|---|---|---|
-| European, 16M paths | 12.4 ms | 25.9 ms | 3.06 ms | 4.0× |
-| Arithmetic Asian, 252 steps, 4M paths | 603 ms | 547 ms | 16.0 ms | 38× |
-| Same + antithetic + control variate | 388 ms | 360 ms | 9.4 ms | 41× |
-| Arithmetic basket, d=8, ρ=0.5, 16M paths | 82.3 ms | 93.3 ms | 10.7 ms | 7.7× |
-
-Kernel progression, European call, 16M paths, FP64:
-
-| Kernel | Total ms | Kernel ms | What changed |
-|---|---|---|---|
-| v0 naive | 257.8 | 29.8 | 256 MB of payoffs copied to host and reduced there |
-| v1 block reduce | 52.3 | 49.0 | in-kernel reduction removes the transfer; kernel itself gets slower |
-| v2 grid stride | 25.9 | 25.6 | reduction and RNG init amortized over many paths per thread |
-| v2 grid stride, FP32 | 3.06 | 2.90 | FP32 path arithmetic |
-
-Observations:
-
-- **v0 → v2 is 10× end to end.** v0's kernel is fast but 88% of its time is the device→host
-  copy and CPU reduction.
-- **v1's kernel is slower than v0's** (49 vs 30 ms): with one path per thread, every path pays
-  for a 5-value FP64 block reduction, and FP64 is slow on the T4. v2 performs that reduction
-  once per thread rather than once per path.
-- **FP64 throughput bounds the Asian option.** At 252 steps all three FP64 kernels take
-  ~547 ms regardless of structure; FP32 is 34× faster, consistent with the T4's 1:32 FP64:FP32
-  ratio. FP32 prices stay within one standard error of FP64.
-- **Variance reduction compounds with GPU speed.** Antithetic + control variate reaches
-  SE 0.00011 in 9.4 ms; plain FP32 reaches SE 0.0039 in 16 ms, and would need ~1200× more
-  paths to match.
-- Every backend and precision passes the statistical test suite on the T4 (17/17).
-
-(Colab's own CPU is a 2-vCPU VM and much slower than the M5 Pro, so CPU comparisons above
-use the M5 Pro numbers measured with the same `bench.sh`.)
-
-**Profiling** — _run `scripts/profile.sh`; record per-kernel duration, registers, achieved
-occupancy, and the Speed-of-Light compute vs memory throughput._
+| Same + antithetic + control variate | 5.0 s | 388 ms |
+| Arithmetic basket, d=8, ρ=0.5, 16M paths | 1.15 s | 82.3 ms |
 
 ## References
 
