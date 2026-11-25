@@ -117,7 +117,44 @@ Measured with `scripts/bench.sh`. Prices are within statistical error of the clo
 | Arithmetic Asian, 252 steps, 4M paths | 8.0 s | 603 ms |
 | Arithmetic basket, d=8, ρ=0.5, 16M paths | 1.15 s | 82 ms |
 
-**GPU** — _run `scripts/bench.sh <gpu>` and paste the tables from `summarize.py` here._
+**GPU (NVIDIA Tesla T4 on Google Colab, CUDA 13.0)** — best of 3; *total* is the wall time
+of the whole call including allocation and transfers.
+
+T4 vs the 18-thread CPU baseline:
+
+| Workload | M5 Pro, 18 threads (FP64) | T4 v2 FP64 | T4 v2 FP32 | T4 FP32 vs CPU |
+|---|---|---|---|---|
+| European, 16M paths | 12.4 ms | 25.9 ms | 3.06 ms | 4.0× |
+| Arithmetic Asian, 252 steps, 4M paths | 603 ms | 547 ms | 16.0 ms | 38× |
+| Same + antithetic + control variate | 388 ms | 360 ms | 9.4 ms | 41× |
+| Arithmetic basket, d=8, ρ=0.5, 16M paths | 82.3 ms | 93.3 ms | 10.7 ms | 7.7× |
+
+Kernel progression, European call, 16M paths, FP64:
+
+| Kernel | Total ms | Kernel ms | What changed |
+|---|---|---|---|
+| v0 naive | 257.8 | 29.8 | 256 MB of payoffs copied to host and reduced there |
+| v1 block reduce | 52.3 | 49.0 | in-kernel reduction removes the transfer; kernel itself gets slower |
+| v2 grid stride | 25.9 | 25.6 | reduction and RNG init amortized over many paths per thread |
+| v2 grid stride, FP32 | 3.06 | 2.90 | FP32 path arithmetic |
+
+Observations:
+
+- **v0 → v2 is 10× end to end.** v0's kernel is fast but 88% of its time is the device→host
+  copy and CPU reduction.
+- **v1's kernel is slower than v0's** (49 vs 30 ms): with one path per thread, every path pays
+  for a 5-value FP64 block reduction, and FP64 is slow on the T4. v2 performs that reduction
+  once per thread rather than once per path.
+- **FP64 throughput bounds the Asian option.** At 252 steps all three FP64 kernels take
+  ~547 ms regardless of structure; FP32 is 34× faster, consistent with the T4's 1:32 FP64:FP32
+  ratio. FP32 prices stay within one standard error of FP64.
+- **Variance reduction compounds with GPU speed.** Antithetic + control variate reaches
+  SE 0.00011 in 9.4 ms; plain FP32 reaches SE 0.0039 in 16 ms, and would need ~1200× more
+  paths to match.
+- Every backend and precision passes the statistical test suite on the T4 (17/17).
+
+(Colab's own CPU is a 2-vCPU VM and much slower than the M5 Pro, so CPU comparisons above
+use the M5 Pro numbers measured with the same `bench.sh`.)
 
 **Profiling** — _run `scripts/profile.sh`; record per-kernel duration, registers, achieved
 occupancy, and the Speed-of-Light compute vs memory throughput._

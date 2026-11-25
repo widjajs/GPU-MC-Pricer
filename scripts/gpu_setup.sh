@@ -28,5 +28,5 @@ elif ncu --target-processes all -k regex:mc_ -c 1 ./build/mcprice --backend gpu 
     echo "ncu is installed but this machine blocks GPU performance counters."
     echo "Timing still works; for profiling use a full VM (e.g. AWS g4dn) and run: sudo ncu ..."
 else
-    echo "ncu OK (or your kernel isn't launched yet -- re-run once Milestone 1 works)."
+    echo "ncu can read GPU counters here; run scripts/profile.sh to profile."
 fi
