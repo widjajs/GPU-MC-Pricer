@@ -1,0 +1,7 @@
+build/
+*.ncu-rep
+*.nsys-rep
+results/
+.DS_Store
+compile_commands.json
+.cache/
