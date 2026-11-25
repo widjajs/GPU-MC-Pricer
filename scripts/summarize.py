@@ -19,8 +19,10 @@ def main(path: str) -> None:
 
     for key, grp in groups.items():
         cpu = next((float(r["seconds"]) for r in grp if r["backend"].startswith("cpu") and r["backend"] != "cpu1"), None)
+        best = min(grp, key=lambda r: float(r["seconds"]))
         ref = grp[0]["reference"]
-        print(f"\n**{key}**" + (f" (closed form {float(ref):.6f})" if ref != "NA" else ""))
+        print(f"\n**{key}**" + (f" (closed form {float(ref):.6f})" if ref != "NA" else "") +
+              f" — fastest: {best['backend']}")
         print("\n| backend | price | std err | total ms | kernel ms | Mpaths/s | vs multicore CPU |")
         print("|---|---|---|---|---|---|---|")
         for r in grp:

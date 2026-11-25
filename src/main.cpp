@@ -39,7 +39,8 @@ void usage() {
         "  --antithetic     antithetic variates\n"
         "  --cv             control variate (arithmetic Asian / arithmetic basket)\n"
         "backends:\n"
-        "  --backend cpu1|cpu|gpu|all   (default all: CPU plus every GPU kernel/precision)\n"
+        "  --backend cpu1|cpu|gpu|gpu-all|all   (all = CPU + every GPU kernel/precision;\n"
+        "                   gpu-all = every GPU kernel/precision only)\n"
         "  --threads T      CPU threads for 'cpu' (default: all)\n"
         "  --kernel naive|reduce|grid   GPU kernel for --backend gpu (default grid)\n"
         "  --float          FP32 path arithmetic for --backend gpu\n"
@@ -121,7 +122,8 @@ int main(int argc, char** argv) {
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); usage(); return 2; }
     }
     if (repeat < 1) repeat = 1;
-    if (backend != "cpu1" && backend != "cpu" && backend != "gpu" && backend != "all") {
+    if (backend != "cpu1" && backend != "cpu" && backend != "gpu" && backend != "gpu-all" &&
+        backend != "all") {
         std::fprintf(stderr, "unknown backend %s\n", backend.c_str());
         return 2;
     }
@@ -154,7 +156,7 @@ int main(int argc, char** argv) {
     if (backend == "cpu" || backend == "all")
         runs.push_back({threads ? "cpu" + std::to_string(threads) : "cpu", cpu(threads)});
     if (backend == "gpu") runs.push_back({gpu_label(cfg), gpu(cfg)});
-    if (backend == "all" && gpu_available()) {
+    if ((backend == "all" && gpu_available()) || backend == "gpu-all") {
         std::vector<SimConfig> variants;
         if (is_basket) {
             for (Precision p : {Precision::Double, Precision::Single}) {
@@ -178,6 +180,9 @@ int main(int argc, char** argv) {
     std::vector<Row> rows;
     try {
         for (const Run& run : runs) {
+            // Untimed warm-up for GPU runs: CUDA context, module load, and GPU clocks
+            // ramping up from idle would otherwise distort millisecond-scale timings.
+            if (run.label.rfind("gpu", 0) == 0) run.fn();
             PriceResult best = run.fn();
             for (int k = 1; k < repeat; ++k) {
                 PriceResult r = run.fn();
